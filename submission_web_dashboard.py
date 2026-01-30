@@ -1,108 +1,93 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
 
-# --------------------------- PAGE SETTINGS ---------------------------
-st.set_page_config(page_title="Algo Trading Dashboard", layout="wide", initial_sidebar_state="expanded")
-st.title("📊 Multi-Stock Algo Trading Dashboard")
+# -------------------------
+# Page Config
+# -------------------------
+st.set_page_config(
+    page_title="BatraHedge Algo Trading Dashboard",
+    layout="wide"
+)
 
-# --------------------------- LOAD DATA ---------------------------
-df = pd.read_excel("power_equity_zerodha_5minute .xlsx")  # your full dataset
+st.title("📈 BatraHedge Algo-Trading Dashboard")
+st.markdown("Moving Average Crossover Strategy (MA 5 / MA 15)")
 
-# Combine date and time
-df['Datetime'] = pd.to_datetime(df['date'].astype(str) + ' ' + df['time'].astype(str))
-df = df[['Datetime', 'tradingsymbol', 'close']].copy()
+# -------------------------
+# Load Data
+# -------------------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("raw_backtest_results.csv")
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+    return df
 
-# --------------------------- PREPARE STRATEGY ---------------------------
-results = []
-for symbol in df['tradingsymbol'].unique():
-    temp = df[df['tradingsymbol'] == symbol].copy()
-    temp = temp.sort_values('Datetime')
-    temp['MA_5'] = temp['close'].rolling(5).mean()
-    temp['MA_15'] = temp['close'].rolling(15).mean()
-    temp['signal'] = 0
-    temp.loc[temp['MA_5'] > temp['MA_15'], 'signal'] = 1
-    temp.loc[temp['MA_5'] < temp['MA_15'], 'signal'] = -1
-    temp['return'] = temp['close'].pct_change()
-    temp['strategy_return'] = temp['return'] * temp['signal'].shift(1)
-    temp['cumulative_return'] = (1 + temp['strategy_return']).cumprod()
-    results.append(temp)
+df = load_data()
 
-final_df = pd.concat(results)
+# -------------------------
+# Sidebar Controls
+# -------------------------
+st.sidebar.header("🔧 Controls")
 
-# --------------------------- SIDEBAR CONTROLS ---------------------------
-st.sidebar.header("Controls")
-symbol = st.sidebar.selectbox("Select Stock", final_df['tradingsymbol'].unique())
+symbols = sorted(df["tradingsymbol"].unique())
+selected_symbol = st.sidebar.selectbox("Select Stock", symbols)
 
-# Filter for selected stock
-data = final_df[final_df['tradingsymbol'] == symbol].copy()
+symbol_df = df[df["tradingsymbol"] == selected_symbol].copy()
 
-# Date range
-min_date = data['Datetime'].min()
-max_date = data['Datetime'].max()
-start_date, end_date = st.sidebar.date_input("Select Date Range", [min_date, max_date])
-data = data[(data['Datetime'].dt.date >= start_date) & (data['Datetime'].dt.date <= end_date)]
+start_date = st.sidebar.date_input(
+    "Start Date", symbol_df["Datetime"].min().date()
+)
+end_date = st.sidebar.date_input(
+    "End Date", symbol_df["Datetime"].max().date()
+)
 
-# --------------------------- PERFORMANCE METRICS ---------------------------
-cumulative_return = data['cumulative_return'].iloc[-1]
-total_trades = data['signal'].abs().sum()
-wins = ((data['strategy_return'] > 0) & (data['signal'].shift(1) != 0)).sum()
-win_rate = (wins / total_trades * 100) if total_trades != 0 else 0
-roll_max = data['cumulative_return'].cummax()
-drawdown = (data['cumulative_return'] - roll_max) / roll_max
-max_drawdown = drawdown.min()
+symbol_df = symbol_df[
+    (symbol_df["Datetime"].dt.date >= start_date) &
+    (symbol_df["Datetime"].dt.date <= end_date)
+]
 
-# --------------------------- TABS ---------------------------
-tab1, tab2, tab3 = st.tabs(["📉 Chart", "📈 Metrics", "ℹ️ Stock Info"])
+# -------------------------
+# Metrics
+# -------------------------
+final_return = symbol_df["cumulative_return"].iloc[-1]
+total_trades = symbol_df["signal"].abs().sum()
+max_dd = symbol_df["drawdown"].min()
 
-# --------------------------- TAB 1: CHART ---------------------------
-with tab1:
-    st.subheader(f"Price Chart & Signals: {symbol}")
-    fig, ax = plt.subplots(figsize=(12,5))
-    ax.plot(data['Datetime'], data['close'], label="Close Price")
-    ax.plot(data['Datetime'], data['MA_5'], label="MA 5")
-    ax.plot(data['Datetime'], data['MA_15'], label="MA 15")
-    # Buy/Sell markers
-    ax.scatter(data[data['signal'] == 1]['Datetime'],
-               data[data['signal'] == 1]['close'],
-               marker='^', color='green', s=100, label='BUY')
-    ax.scatter(data[data['signal'] == -1]['Datetime'],
-               data[data['signal'] == -1]['close'],
-               marker='v', color='red', s=100, label='SELL')
-    ax.legend()
-    ax.grid(True)
-    st.pyplot(fig)
+col1, col2, col3 = st.columns(3)
+col1.metric("📊 Final Cumulative Return", f"{final_return:.4f}")
+col2.metric("🔁 Total Trades", int(total_trades))
+col3.metric("⚠️ Max Drawdown", f"{max_dd:.4f}")
 
-# --------------------------- TAB 2: METRICS ---------------------------
-with tab2:
-    st.subheader(f"Performance Metrics: {symbol}")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Final Cumulative Return", round(cumulative_return, 4))
-    col2.metric("Total Trades", int(total_trades))
-    col3.metric("Win Rate (%)", round(win_rate, 2))
-    col4.metric("Max Drawdown", round(max_drawdown, 4))
+# -------------------------
+# Price Chart
+# -------------------------
+st.subheader("📉 Price Chart with Moving Averages")
 
-    # Download button
-    metrics_df = pd.DataFrame({
-        "Final Cumulative Return": [round(cumulative_return, 4)],
-        "Total Trades": [int(total_trades)],
-        "Win Rate (%)": [round(win_rate, 2)],
-        "Max Drawdown": [round(max_drawdown, 4)]
-    })
-    st.download_button(
-        label="📥 Download Metrics as CSV",
-        data=metrics_df.to_csv(index=False),
-        file_name=f"{symbol}_metrics.csv",
-        mime="text/csv"
-    )
+chart_df = symbol_df.set_index("Datetime")[["close", "ma_fast", "ma_slow"]]
+st.line_chart(chart_df)
 
-# --------------------------- TAB 3: STOCK INFO ---------------------------
-with tab3:
-    st.subheader(f"Stock Overview: {symbol}")
-    st.write(f"Total Data Points: {len(data)}")
-    st.write(f"Date Range: {data['Datetime'].min()} to {data['Datetime'].max()}")
-    st.write("Strategy: Moving Average Crossover (MA 5 & MA 15)")
-    st.write("Buy Signal: MA 5 crosses above MA 15")
-    st.write("Sell Signal: MA 5 crosses below MA 15")
-    st.write("Note: Strategy is for demonstration and educational purposes")
+# -------------------------
+# Buy / Sell Signals
+# -------------------------
+st.subheader("🟢 Buy / 🔴 Sell Signals")
+
+signal_df = symbol_df[symbol_df["signal"] != 0][
+    ["Datetime", "close", "signal"]
+]
+
+st.dataframe(signal_df, use_container_width=True)
+
+# -------------------------
+# Raw Data
+# -------------------------
+with st.expander("📄 View Raw Backtest Data"):
+    st.dataframe(symbol_df.tail(200), use_container_width=True)
+
+# -------------------------
+# Download
+# -------------------------
+st.download_button(
+    "⬇️ Download Backtest CSV",
+    symbol_df.to_csv(index=False),
+    file_name=f"{selected_symbol}_backtest.csv"
+)
